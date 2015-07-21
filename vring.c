@@ -328,4 +328,15 @@ int kick(VringTable* vring_table, uint32_t v_idx)
     return 0;
 }
 
+int call(VringTable* vring_table, uint32_t v_idx)
+{
+    uint64_t call_it = 1;
+    int callfd = vring_table->vring[v_idx].callfd;
+
+    write(callfd, &call_it, sizeof(call_it));
+    fsync(callfd);
+
+    return 0;
+}
+
 #endif /* VRING_C_ */
