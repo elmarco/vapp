@@ -24,7 +24,7 @@
 #define VHOST_CLIENT_PAGE_SIZE \
             ALIGN(sizeof(struct vhost_vring)+BUFFER_SIZE*VHOST_VRING_SIZE, ONEMEG)
 
-static int _kick_client(FdNode* node);
+static int _call_client(FdNode* node);
 static int avail_handler_client(void* context, void* buf, size_t size);
 
 VhostClient* new_vhost_client(const char* path)
@@ -99,10 +99,10 @@ int init_vhost_client(VhostClient* vhost_client)
         vhost_client->vring_table.vring[idx].last_used_idx = 0;
     }
 
-    // Add handler for RX kickfd
+    // Add handler for RX callfd
     add_fd_list(&vhost_client->client->fd_list, FD_READ,
-            vhost_client->vring_table.vring[VHOST_CLIENT_VRING_IDX_RX].kickfd,
-            (void*) vhost_client, _kick_client);
+            vhost_client->vring_table.vring[VHOST_CLIENT_VRING_IDX_RX].callfd,
+            (void*) vhost_client, _call_client);
 
     return 0;
 }
@@ -143,6 +143,19 @@ static int send_packet(VhostClient* vhost_client, void* p, size_t size)
     return kick(&vhost_client->vring_table, tx_idx);
 }
 
+static int send_rx_packet(VhostClient* vhost_client)
+{
+    int r = 0;
+    uint32_t rx_idx = VHOST_CLIENT_VRING_IDX_RX;
+
+    r = put_vring(&vhost_client->vring_table, rx_idx, NULL, 0);
+
+    if (r != 0)
+        return -1;
+
+    return kick(&vhost_client->vring_table, rx_idx);
+}
+
 static int avail_handler_client(void* context, void* buf, size_t size)
 {
     // consume the packet
@@ -153,27 +166,27 @@ static int avail_handler_client(void* context, void* buf, size_t size)
     return 0;
 }
 
-static int _kick_client(FdNode* node)
+static int _call_client(FdNode* node)
 {
     VhostClient* vhost_client = (VhostClient*) node->context;
-    int kickfd = node->fd;
+    int callfd = node->fd;
     ssize_t r;
-    uint64_t kick_it = 0;
+    uint64_t call_it = 0;
 
-    r = read(kickfd, &kick_it, sizeof(kick_it));
+    r = read(callfd, &call_it, sizeof(call_it));
 
     if (r < 0) {
-        perror("recv kick");
+        perror("recv call");
     } else if (r == 0) {
-        fprintf(stdout, "Kick fd closed\n");
-        del_fd_list(&vhost_client->client->fd_list, FD_READ, kickfd);
+        fprintf(stdout, "Call fd closed\n");
+        del_fd_list(&vhost_client->client->fd_list, FD_READ, callfd);
     } else {
         int idx = VHOST_CLIENT_VRING_IDX_RX;
-#if 0
-        fprintf(stdout, "Got kick %ld\n", kick_it);
+#if 1
+        fprintf(stdout, "Got call %ld\n", call_it);
 #endif
 
-        process_avail_vring(&vhost_client->vring_table, idx);
+        process_used_vring(&vhost_client->vring_table, idx);
     }
 
     return 0;
@@ -189,9 +202,14 @@ static int poll_client(void* context)
         return -1;
     }
 
+    if (send_rx_packet(vhost_client) != 0) {
+        fprintf(stdout, "Send rx packet failed.\n");
+        return -1;
+    }
+
     if (send_packet(vhost_client, (void*) VHOST_CLIENT_TEST_MESSAGE,
             VHOST_CLIENT_TEST_MESSAGE_LEN) != 0) {
-        fprintf(stdout, "Send packet failed.\n");
+        fprintf(stdout, "Send packet tx failed.\n");
         return -1;
     }
 

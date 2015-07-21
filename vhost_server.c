@@ -437,11 +437,11 @@ static int poll_server(void* context)
         // process RX ring
         if (vhost_server->buffer_size) {
             // send a packet from the buffer
-            put_vring(&vhost_server->vring_table, rx_idx,
+            reply_vring(&vhost_server->vring_table, rx_idx,
                       vhost_server->buffer, vhost_server->buffer_size);
 
             // signal the client
-            kick(&vhost_server->vring_table, rx_idx);
+            call(&vhost_server->vring_table, rx_idx);
 
             // mark the buffer empty
             vhost_server->buffer_size = 0;
