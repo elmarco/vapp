@@ -171,7 +171,7 @@ int put_vring(VringTable* vring_table, uint32_t v_idx, void* buf, size_t size)
     avail->ring[avail->idx % num] = a_idx;
     avail->idx++;
 
-    sync_shm(dest_buf, size);
+    sync_shm(dest_buf, hdr_len + size);
     sync_shm((void*)&(avail), sizeof(struct vring_avail));
 
     return 0;
