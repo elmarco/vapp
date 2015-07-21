@@ -95,8 +95,8 @@ int set_host_vring(Client* client, struct vhost_vring *vring, int index)
             .desc_user_addr = (uintptr_t) &vring->desc,
             .avail_user_addr = (uintptr_t) &vring->avail,
             .used_user_addr = (uintptr_t) &vring->used,
-            .log_guest_addr = (uintptr_t) NULL,
-            .flags = 0 };
+            .log_guest_addr = (uintptr_t) &vring->used,
+            .flags = 1 << VHOST_VRING_F_LOG };
 
     if (vhost_ioctl(client, VHOST_USER_SET_VRING_NUM, &num) != 0)
         return -1;
@@ -293,7 +293,58 @@ static int process_desc(VringTable* vring_table, uint32_t v_idx, uint32_t a_idx)
     return 0;
 }
 
-int process_avail_vring(VringTable* vring_table, uint32_t v_idx)
+static inline void set_bit(uint8_t *a, unsigned int bit)
+{
+    a[bit / 8] |= (1 << (bit % 8));
+}
+
+static int log_write(void *log_base,
+                     uint64_t write_address, uint64_t write_length)
+{
+    uint64_t write_page = write_address / VHOST_LOG_PAGE;
+
+    if (!write_length)
+        return 0;
+
+    write_length += write_address % VHOST_LOG_PAGE;
+
+    for (;;) {
+        uint64_t base = (uint64_t)(unsigned long)log_base;
+        uint64_t log = base + write_page / 8;
+        int bit = write_page % 8;
+        if ((uint64_t)(unsigned long)log != log)
+            return -1;
+
+        fprintf(stderr, "log bit at %p / %p, bit: %d\n",
+                (void*)(unsigned long)log, log_base, bit);
+        set_bit((void*)(unsigned long)log, bit);
+
+        if (write_length <= VHOST_LOG_PAGE)
+            break;
+        write_length -= VHOST_LOG_PAGE;
+        write_page += 1;
+    }
+
+    return 0;
+}
+
+static int kick_log(VhostLog *log)
+{
+    uint64_t kick_it = 1;
+    int kickfd = log->eventfd;
+
+    sync_shm(log->log, log->size);
+
+    if (kickfd == -1)
+        return -1;
+
+    write(kickfd, &kick_it, sizeof(kick_it));
+    fsync(kickfd);
+
+    return 0;
+}
+
+int process_avail_vring(VringTable* vring_table, uint32_t v_idx, VhostLog *log)
 {
     struct vring_avail* avail = vring_table->vring[v_idx].avail;
     struct vring_used* used = vring_table->vring[v_idx].used;
@@ -317,6 +368,12 @@ int process_avail_vring(VringTable* vring_table, uint32_t v_idx)
     }
 
     used->idx = vring_table->vring[v_idx].last_used_idx;
+    if (log && log->log &&
+        vring_table->vring[v_idx].flags & (1 << VHOST_VRING_F_LOG)) {
+        log_write(log->log, vring_table->vring[v_idx].log_guest_addr +
+                  offsetof(struct vring_used, idx), sizeof used->idx);
+        kick_log(log);
+    }
 
     return count;
 }
@@ -343,7 +400,8 @@ int call(VringTable* vring_table, uint32_t v_idx)
     return 0;
 }
 
-int reply_vring(VringTable* vring_table, uint32_t v_idx, void* buf, size_t size)
+int reply_vring(VringTable* vring_table, uint32_t v_idx, void* buf, size_t size,
+                VhostLog *log)
 {
     struct vring_desc* desc = vring_table->vring[v_idx].desc;
     struct vring_avail* avail = vring_table->vring[v_idx].avail;
@@ -390,6 +448,17 @@ int reply_vring(VringTable* vring_table, uint32_t v_idx, void* buf, size_t size)
     vring_table->vring[v_idx].last_avail_idx++;
     vring_table->vring[v_idx].last_used_idx++;
     used->idx = vring_table->vring[v_idx].last_used_idx;
+
+    if (log && log->log) {
+        log_write(log->log, desc[d_idx].addr, size);
+        if (vring_table->vring[v_idx].flags & (1 << VHOST_VRING_F_LOG)) {
+            log_write(log->log, vring_table->vring[v_idx].log_guest_addr +
+                      (void*)&used->ring[u_idx] - (void*)used, sizeof *used);
+            log_write(log->log, vring_table->vring[v_idx].log_guest_addr +
+                      offsetof(struct vring_used, idx), sizeof used->idx);
+        }
+        kick_log(log);
+    }
 
     return 0;
 }

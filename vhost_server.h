@@ -31,6 +31,7 @@ typedef struct VhostServer {
     Server* server;
     VhostServerMemory memory;
     VringTable vring_table;
+    VhostLog log;
 
     int is_polling;
     uint8_t buffer[BUFFER_SIZE];

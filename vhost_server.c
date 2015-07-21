@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/mman.h>
 
 #include "fd_list.h"
 #include "shm.h"
@@ -57,6 +58,8 @@ VhostServer* new_vhost_server(const char* path, int is_listen)
     vhost_server->buffer_size = 0;
     vhost_server->is_polling = 0;
     init_stat(&vhost_server->stat);
+
+    vhost_server->log.eventfd = -1;
 
     return vhost_server;
 }
@@ -120,7 +123,7 @@ static int _get_features(VhostServer* vhost_server, ServerMsg* msg)
 {
     fprintf(stdout, "%s\n", __FUNCTION__);
 
-    msg->msg.u64 =
+    msg->msg.u64 = 0x1ULL << VHOST_F_LOG_ALL |
         0x1ULL << VHOST_USER_F_PROTOCOL_FEATURES;
 
     msg->msg.size = MEMB_SIZE(VhostUserMsg,u64);
@@ -140,9 +143,23 @@ static int _set_owner(VhostServer* vhost_server, ServerMsg* msg)
     return 0;
 }
 
+static void reset_log(VhostServer* vhost_server)
+{
+    if (vhost_server->log.log != NULL) {
+        if (munmap(vhost_server->log.log, vhost_server->log.size) != 0) {
+            perror("munmap");
+        }
+
+        vhost_server->log.log = NULL;
+    }
+}
+
 static int _reset_owner(VhostServer* vhost_server, ServerMsg* msg)
 {
     fprintf(stdout, "%s\n", __FUNCTION__);
+
+    reset_log(vhost_server);
+
     return 0;
 }
 
@@ -177,15 +194,90 @@ static int _set_mem_table(VhostServer* vhost_server, ServerMsg* msg)
     return 0;
 }
 
+/* Get last byte of a range from offset + length.
+ * Undefined for ranges that wrap around 0. */
+static inline uint64_t range_get_last(uint64_t offset, uint64_t len)
+{
+    return offset + len - 1;
+}
+
+typedef struct VRingUsedElem
+{
+    uint32_t id;
+    uint32_t len;
+} VRingUsedElem;
+
+typedef struct VRingUsed
+{
+    uint16_t flags;
+    uint16_t idx;
+    VRingUsedElem ring[0];
+} VRingUsed;
+
+uint64_t ring_get_used_size(Vring *ring)
+{
+    return offsetof(VRingUsed, ring) + sizeof(VRingUsedElem) * ring->num;
+}
+
+static uint64_t get_log_size(VhostServer* vhost_server)
+{
+    uint64_t log_size = 0;
+    int i;
+
+    for (i = 0; i < vhost_server->memory.nregions; ++i) {
+        VhostServerMemoryRegion *reg = &vhost_server->memory.regions[i];
+        uint64_t last = range_get_last(reg->guest_phys_addr,
+                                       reg->memory_size);
+        log_size = MAX(log_size, last / VHOST_LOG_CHUNK + 1);
+    }
+    for (i = 0; i < VHOST_CLIENT_VRING_NUM; ++i) {
+        Vring *ring = &vhost_server->vring_table.vring[i];
+        uint64_t last =
+            range_get_last(ring->log_guest_addr,
+                           ring_get_used_size(ring));
+        log_size = MAX(log_size, last / VHOST_LOG_CHUNK + 1);
+    }
+    return log_size;
+}
+
 static int _set_log_base(VhostServer* vhost_server, ServerMsg* msg)
 {
+    int fd = -1;
+    uint64_t size;
+
     fprintf(stdout, "%s\n", __FUNCTION__);
+
+    assert(msg->fd_num <= 1);
+
+    reset_log(vhost_server);
+
+    if (msg->fd_num == 1) {
+        fd = msg->fds[0];
+        size = get_log_size(vhost_server) * sizeof(*(vhost_server->log.log));
+        vhost_server->log.log =
+            init_shm_from_fd(fd, size);
+        vhost_server->log.size = size;
+        fprintf(stdout, "fd:%d size:%lu ptr:%p\n",
+                fd, size, vhost_server->log.log);
+    }
+
+    if (fd != -1)
+        close(fd);
+
     return 0;
 }
 
 static int _set_log_fd(VhostServer* vhost_server, ServerMsg* msg)
 {
-    fprintf(stdout, "%s\n", __FUNCTION__);
+    assert(msg->fd_num == 1);
+
+    if (vhost_server->log.eventfd != -1)
+        close(vhost_server->log.eventfd);
+
+    vhost_server->log.eventfd = msg->fds[0];
+
+    fprintf(stdout, "Got log eventfd 0x%x\n", vhost_server->log.eventfd);
+
     return 0;
 }
 
@@ -219,9 +311,14 @@ static int _set_vring_addr(VhostServer* vhost_server, ServerMsg* msg)
     vhost_server->vring_table.vring[idx].used =
             (struct vring_used*) _map_user_addr(vhost_server,
                     msg->msg.addr.used_user_addr);
+    vhost_server->vring_table.vring[idx].flags =
+            msg->msg.addr.flags;
 
     vhost_server->vring_table.vring[idx].last_used_idx =
             vhost_server->vring_table.vring[idx].used->idx;
+
+    vhost_server->vring_table.vring[idx].log_guest_addr =
+        msg->msg.addr.log_guest_addr;
 
     return 0;
 }
@@ -284,7 +381,8 @@ static int _poll_avail_vring(VhostServer* vhost_server, int idx)
 
     // if vring is already set, process the vring
     if (vhost_server->vring_table.vring[idx].desc) {
-        count = process_avail_vring(&vhost_server->vring_table, idx);
+        count = process_avail_vring(&vhost_server->vring_table, idx,
+                                    &vhost_server->log);
 #ifndef DUMP_PACKETS
 
         update_stat(&vhost_server->stat, count);
@@ -442,7 +540,8 @@ static int poll_server(void* context)
         if (vhost_server->buffer_size) {
             // send a packet from the buffer
             reply_vring(&vhost_server->vring_table, rx_idx,
-                      vhost_server->buffer, vhost_server->buffer_size);
+                      vhost_server->buffer, vhost_server->buffer_size,
+                      &vhost_server->log);
 
             // signal the client
             call(&vhost_server->vring_table, rx_idx);

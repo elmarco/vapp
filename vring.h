@@ -68,6 +68,9 @@ typedef struct {
     MapHandler map_handler;
 } ProcessHandler;
 
+/* Whether log address is valid. If set enables logging. */
+#define VHOST_VRING_F_LOG 0
+
 typedef struct {
   int kickfd, callfd;
   struct vring_desc* desc;
@@ -76,7 +79,12 @@ typedef struct {
   unsigned int num;
   uint16_t last_avail_idx;
   uint16_t last_used_idx;
+  uint64_t log_guest_addr;
+  uint32_t flags;
 } Vring;
+
+/* Whether log address is valid. If set enables logging. */
+#define VHOST_VRING_F_LOG 0
 
 struct VhostUserMemory;
 
@@ -98,11 +106,23 @@ typedef struct {
     Vring vring[VHOST_CLIENT_VRING_NUM];
 } VringTable;
 
+typedef unsigned long vhost_log_chunk_t;
+#define VHOST_LOG_PAGE 0x1000
+#define VHOST_LOG_BITS (8 * sizeof(vhost_log_chunk_t))
+#define VHOST_LOG_CHUNK (VHOST_LOG_PAGE * VHOST_LOG_BITS)
+
+typedef struct VhostLog {
+    int eventfd;
+    unsigned long long size;
+    vhost_log_chunk_t *log;
+} VhostLog;
+
 int put_vring(VringTable* vring_table, uint32_t v_idx, void* buf, size_t size);
-int reply_vring(VringTable* vring_table, uint32_t v_idx, void* buf, size_t size);
+int reply_vring(VringTable* vring_table, uint32_t v_idx, void* buf, size_t size,
+                VhostLog *log);
 
 int process_used_vring(VringTable* vring_table, uint32_t v_idx);
-int process_avail_vring(VringTable* vring_table, uint32_t v_idx);
+int process_avail_vring(VringTable* vring_table, uint32_t v_idx, VhostLog *log);
 
 int kick(VringTable* vring_table, uint32_t v_idx);
 int call(VringTable* vring_table, uint32_t v_idx);
