@@ -354,33 +354,41 @@ int reply_vring(VringTable* vring_table, uint32_t v_idx, void* buf, size_t size)
     uint16_t u_idx = vring_table->vring[v_idx].last_used_idx % num;
     uint16_t d_idx = avail->ring[a_idx];
     void* dest_buf = 0;
+    size_t len, written = 0;
 
     /* we reached the end of avail */
     if (vring_table->vring[v_idx].last_avail_idx == avail->idx)
         return -1;
 
-    if (size > desc[d_idx].len) {
+    while (written < size) {
+        assert(desc[d_idx].flags & VIRTIO_DESC_F_WRITE);
+
+        // map the address
+        if (handler && handler->map_handler) {
+            dest_buf = (void*)handler->map_handler(handler->context, desc[d_idx].addr);
+        } else {
+            dest_buf = (void*) (uintptr_t) desc[a_idx].addr;
+        }
+
+        len = MIN(desc[d_idx].len, size - written);
+        memcpy(dest_buf, buf + written, len);
+        written += len;
+
+        if (desc[d_idx].flags & VIRTIO_DESC_F_NEXT)
+            d_idx = desc[d_idx].next;
+        else
+            break;
+    }
+
+    if (written != size)
         return -1;
-    }
-
-    assert(desc[d_idx].flags & VIRTIO_DESC_F_WRITE);
-
-    // map the address
-    if (handler && handler->map_handler) {
-        dest_buf = (void*)handler->map_handler(handler->context, desc[d_idx].addr);
-    } else {
-        dest_buf = (void*) (uintptr_t) desc[a_idx].addr;
-    }
-
-    memcpy(dest_buf, buf, size);
 
     // add it to the used ring
-    used->ring[u_idx].id = d_idx;
+    used->ring[u_idx].id = avail->ring[a_idx];
     used->ring[u_idx].len = size;
 
     vring_table->vring[v_idx].last_avail_idx++;
     vring_table->vring[v_idx].last_used_idx++;
-
     used->idx = vring_table->vring[v_idx].last_used_idx;
 
     return 0;

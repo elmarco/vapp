@@ -256,10 +256,14 @@ static int _get_vring_base(VhostServer* vhost_server, ServerMsg* msg)
 static int avail_handler_server(void* context, void* buf, size_t size)
 {
     VhostServer* vhost_server = (VhostServer*) context;
+    size_t hdr_len = sizeof(struct virtio_net_hdr);
+
+    if (size + hdr_len > BUFFER_SIZE)
+        return -1;
 
     // copy the packet to our private buffer
-    memcpy(vhost_server->buffer, buf, size);
-    vhost_server->buffer_size = size;
+    memcpy(vhost_server->buffer + hdr_len, buf, size);
+    vhost_server->buffer_size = size + hdr_len;
 
 #ifdef DUMP_PACKETS
     dump_buffer(buf, size);
