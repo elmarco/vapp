@@ -51,6 +51,10 @@ const char* cmd_from_vhostmsg(const VhostUserMsg* msg)
         return "VHOST_USER_SET_VRING_CALL";
     case VHOST_USER_SET_VRING_ERR:
         return "VHOST_USER_SET_VRING_ERR";
+    case VHOST_USER_GET_PROTOCOL_FEATURES:
+        return "VHOST_USER_GET_PROTOCOL_FEATURES";
+    case VHOST_USER_SET_PROTOCOL_FEATURES:
+        return "VHOST_USER_SET_PROTOCOL_FEATURES";
     case VHOST_USER_MAX:
         return "VHOST_USER_MAX";
     }
@@ -112,6 +116,12 @@ void dump_vhostmsg(const VhostUserMsg* msg)
     case VHOST_USER_SET_VRING_KICK:
     case VHOST_USER_SET_VRING_CALL:
     case VHOST_USER_SET_VRING_ERR:
+        fprintf(stdout, "u64: 0x%"PRIx64"\n", msg->u64);
+        break;
+    case VHOST_USER_GET_PROTOCOL_FEATURES:
+        fprintf(stdout, "u64: 0x%"PRIx64"\n", msg->u64);
+        break;
+    case VHOST_USER_SET_PROTOCOL_FEATURES:
         fprintf(stdout, "u64: 0x%"PRIx64"\n", msg->u64);
         break;
     case VHOST_USER_NONE:

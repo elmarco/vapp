@@ -15,6 +15,16 @@
 
 #include "vhost.h"
 
+/* Feature bits */
+/* Log all write descriptors. Can be changed while device is active. */
+#define VHOST_F_LOG_ALL 26
+/* vhost-net should add virtio_net_hdr for RX, and strip for TX packets. */
+#define VHOST_NET_F_VIRTIO_NET_HDR 27
+/* Support SET/GET_PROTOCOL_FEATURES */
+#define VHOST_USER_F_PROTOCOL_FEATURES 30
+
+#define VHOST_USER_PROTOCOL_F_LOG_SHMFD 0
+
 typedef struct VhostUserMemoryRegion {
     uint64_t guest_phys_addr;
     uint64_t memory_size;
@@ -44,6 +54,9 @@ typedef enum VhostUserRequest {
     VHOST_USER_SET_VRING_KICK = 12,
     VHOST_USER_SET_VRING_CALL = 13,
     VHOST_USER_SET_VRING_ERR = 14,
+    VHOST_USER_GET_PROTOCOL_FEATURES = 15,
+    VHOST_USER_SET_PROTOCOL_FEATURES = 16,
+
     VHOST_USER_MAX
 } VhostUserRequest;
 
